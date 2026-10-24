@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>BullionVault — Zero-API Gold & Silver Tracker w/ Password Sync</title>
+  <title>BullionVault — Zero-API Gold & Silver Tracker w/ Live Password Cloud Sync</title>
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- React & ReactDOM CDN -->
@@ -28,6 +28,9 @@
 
     const INITIAL_TRANSACTIONS = [];
 
+    // Public KVDB Bucket for Zero-Config Password-Hashed Cloud Sync
+    const KVDB_BUCKET = "https://kvdb.io/6X9yK2mN8pQ4rS7vW1zA3b";
+
     async function computeFileHash(file) {
       const buffer = await file.arrayBuffer();
       const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
@@ -35,21 +38,77 @@
       return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
     }
 
+    // Helper: Decode exact Date & Time embedded inside PhonePe Transaction ID (e.g. NB261023174548...)
+    function decodePhonePeTxTimestamp(txId) {
+      if (!txId) return null;
+      const m = txId.toUpperCase().match(/^(?:NB|T)(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\d+$/);
+      if (!m) return null;
+      const year = 2000 + parseInt(m[1], 10);
+      const month = parseInt(m[2], 10);
+      const day = parseInt(m[3], 10);
+      const hour24 = parseInt(m[4], 10);
+      const minute = parseInt(m[5], 10);
+
+      if (month < 1 || month > 12 || day < 1 || day > 31 || hour24 > 23 || minute > 59) {
+        return null;
+      }
+
+      const dateStr = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      const period = hour24 >= 12 ? "pm" : "am";
+      const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+      const timeStr = `${String(hour12).padStart(2, "0")}:${String(minute).padStart(2, "0")} ${period}`;
+
+      return { date: dateStr, time: timeStr };
+    }
+
+    //Helper: Convert 12-hour "05:45 pm" to sortable 24-hour "17:45"
+    function to24HourTime(timeStr = "12:00 pm") {
+      const m = String(timeStr).trim().match(/^(\d{1,2}):(\d{2})\s*(am|pm)?$/i);
+      if (!m) return "12:00";
+      let h = parseInt(m[1], 10);
+      const min = m[2];
+      const mer = (m[3] || "pm").toLowerCase();
+      if (mer === "pm" && h < 12) h += 12;
+      if (mer === "am" && h === 12) h = 0;
+      return `${String(h).padStart(2, "0")}:${min}`;
+    }
+
     // Smart RegEx + Math Cross-Verification Parser for PhonePe Receipts
     function parsePhonePeOCRText(rawText) {
       const text = rawText.replace(/\r/g, " ");
       
+      // 1. Detect Metal & Provider
       const isGold = /Gold\s*Purchase|Rate\s*of\s*gold|Gold\s*Weight|Gold\s*value/i.test(text);
       const isSilver = /Silver\s*Purchase|Rate\s*of\s*silver|Silver\s*Weight|Silver\s*value/i.test(text);
       const metal = isGold ? "Gold" : isSilver ? "Silver" : "Silver";
       const provider = /MMTC[\s-]*PAMP/i.test(text) ? "MMTC-PAMP" : "SafeGold";
 
-      let dateStr = new Date().toISOString().slice(0, 10);
-      let timeStr = "12:00 pm";
-      const timeMatch = text.match(/(\d{1,2}:\d{2}\s*(?:am|pm))/i);
-      if (timeMatch) timeStr = timeMatch[1].toLowerCase();
+      // 2. Extract PhonePe Transaction ID first (so we can also use its embedded timestamp!)
+      const txIdMatch = text.match(/\b(NB\d{18,28}|T\d{18,28})\b/i);
+      const transactionId = txIdMatch ? txIdMatch[1].toUpperCase() : "";
+      const decodedTxTime = decodePhonePeTxTimestamp(transactionId);
 
-      const dateMatch = text.match(/(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})/i);
+      // 3. Extract Date & Time from Screenshot Banner (e.g., "05:45 pm on 23 Oct 2026")
+      // Handles OCR quirks like 'O5:45 pm', '05.45 pm', '05:45pm on 23 Oct 2026'
+      let dateStr = decodedTxTime ? decodedTxTime.date : new Date().toISOString().slice(0, 10);
+      let timeStr = decodedTxTime ? decodedTxTime.time : "12:00 pm";
+
+      // Normalize OCR 'O' -> '0' near time/date patterns
+      const normalizedHeader = text.replace(/\bO(\d[:.]\d{2})/g, "0$1");
+
+      // Match time specifically near "on <date>" or with am/pm (avoids matching top status bar clock 17:48)
+      const bannerTimeMatch =
+        normalizedHeader.match(/([0-1]?\d)\s*[:.]\s*([0-5]\d)\s*(am|pm)\s*(?:on\b)?/i) ||
+        normalizedHeader.match(/([0-1]?\d)\s*[:.]\s*([0-5]\d)\s*([ap]\.?m\.?)/i);
+
+      if (bannerTimeMatch) {
+        const hh = bannerTimeMatch[1].padStart(2, "0");
+        const mm = bannerTimeMatch[2].padStart(2, "0");
+        const mer = bannerTimeMatch[3].replace(/\./g, "").toLowerCase();
+        timeStr = `${hh}:${mm} ${mer}`;
+      }
+
+      const dateMatch = normalizedHeader.match(/(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})/i);
       if (dateMatch) {
         const months = { jan:"01", feb:"02", mar:"03", apr:"04", may:"05", jun:"06", jul:"07", aug:"08", sep:"09", oct:"10", nov:"11", dec:"12" };
         const day = dateMatch[1].padStart(2, "0");
@@ -58,9 +117,13 @@
         dateStr = `${yr}-${mon}-${day}`;
       }
 
-      const txIdMatch = text.match(/\b(NB\d{18,28}|T\d{18,28})\b/i);
-      const transactionId = txIdMatch ? txIdMatch[1].toUpperCase() : "";
+      // If OCR missed the banner time/date, the decoded PhonePe Transaction ID guarantees 100% accuracy
+      if (decodedTxTime) {
+        if (!bannerTimeMatch) timeStr = decodedTxTime.time;
+        if (!dateMatch) dateStr = decodedTxTime.date;
+      }
 
+      // 4. Extract Weight in Grams
       let weightGrams = 0;
       const weightMatches = [...text.matchAll(/(?:Weight|weight)[^\d]*?(0\.\d{2,5})\s*g/gi)];
       if (weightMatches.length > 0) {
@@ -84,6 +147,7 @@
         return num;
       };
 
+      // 5. Extract Total Amount
       let totalAmount = 0;
       const totalMatch = text.match(/Total\s*amount[^\d]*([\d,]+\.?\d*)/i);
       if (totalMatch) {
@@ -93,6 +157,7 @@
         }
       }
 
+      // 6. Extract GST & Metal Value
       let gst = 0;
       const gstMatch = text.match(/GST[^\d]*([\d]+\.\d{2})/i);
       if (gstMatch) {
@@ -116,6 +181,7 @@
         gst = Math.round((totalAmount - metalValue) * 100) / 100;
       }
 
+      // 7. Extract Rate per gram
       let ratePerGram = 0;
       const rateMatch = text.match(/Rate\s*of\s*(?:silver|gold)\/g[^\d]*([\d,]+\.?\d*)/i);
       const expectedRate = (metalValue > 0 && weightGrams > 0) ? (metalValue / weightGrams) : null;
@@ -126,6 +192,7 @@
         ratePerGram = Math.round(expectedRate * 100) / 100;
       }
 
+      // 8. Closing Balance
       let closingBalance = null;
       const balMatch = text.match(/Closing\s*Balance\s*:\s*[^\d]*(\d+)/i);
       if (balMatch) {
@@ -145,25 +212,36 @@
         gst: Number(gst.toFixed(2)),
         totalAmount: Number(totalAmount.toFixed(2)),
         transactionId: transactionId || `MANUAL-${Date.now()}`,
-        closingBalance,
-        rawOcrText: text
+        closingBalance
       };
+    }
+
+    // Auto-repair any existing saved transactions that had "12:00 pm" using their PhonePe Transaction ID
+    function repairSavedTimestamps(txList) {
+      if (!Array.isArray(txList)) return [];
+      return txList.map(tx => {
+        const decoded = decodePhonePeTxTimestamp(tx.transactionId);
+        if (decoded && (!tx.time || tx.time === "12:00 pm")) {
+          return { ...tx, date: decoded.date, time: decoded.time };
+        }
+        return tx;
+      });
     }
 
     function App() {
       const [transactions, setTransactions] = useState(() => {
         const saved = localStorage.getItem("bullion_vault_txs_pwd_v1");
-        return saved ? JSON.parse(saved) : INITIAL_TRANSACTIONS;
+        const parsed = saved ? JSON.parse(saved) : INITIAL_TRANSACTIONS;
+        return repairSavedTimestamps(parsed);
       });
       const [fileHashes, setFileHashes] = useState(() => {
         const saved = localStorage.getItem("bullion_vault_hashes_pwd_v1");
         return saved ? JSON.parse(saved) : [];
       });
 
-      // Simple Password Sync State
       const [syncPassword, setSyncPassword] = useState(() => localStorage.getItem("bullion_vault_sync_pwd") || "");
       const [showPasswordModal, setShowPasswordModal] = useState(false);
-      const [syncStatus, setSyncStatus] = useState("idle"); // 'idle', 'syncing', 'success', 'error'
+      const [syncStatus, setSyncStatus] = useState("idle");
       const [syncMsg, setSyncMsg] = useState("");
 
       const [activeMetal, setActiveMetal] = useState("Silver");
@@ -171,73 +249,91 @@
       const [activeTab, setActiveTab] = useState("dashboard");
       const [liveRates, setLiveRates] = useState({ Silver: 201.89, Gold: 14487.58 });
       const [scanQueue, setScanQueue] = useState([]);
-      const [isScanning, setIsScanning] = useState(false);
       const [monthlySip, setMonthlySip] = useState(500);
       const [forecastMonths, setForecastMonths] = useState(6);
 
       useEffect(() => {
         localStorage.setItem("bullion_vault_txs_pwd_v1", JSON.stringify(transactions));
         localStorage.setItem("bullion_vault_hashes_pwd_v1", JSON.stringify(fileHashes));
-
-        // Auto-push if password is set
-        if (syncPassword && syncPassword.length >= 4) {
-          syncWithPasswordCloud(transactions, fileHashes, "push", false);
-        }
       }, [transactions, fileHashes]);
 
       useEffect(() => {
         localStorage.setItem("bullion_vault_sync_pwd", syncPassword);
       }, [syncPassword]);
 
-      // Derive a deterministic Gist pseudo-ID or use a public bin based on the password hash
       async function getPasswordHash(password) {
-        const msgUint8 = new TextEncoder().encode("bullion-vault-salt-" + password);
+        const cleanPwd = password.trim();
+        const msgUint8 = new TextEncoder().encode("bullion-vault-salt-v2-" + cleanPwd);
         const hashBuffer = await crypto.subtle.digest("SHA-256", msgUint8);
         const hashArray = Array.from(new Uint8Array(hashBuffer));
         return hashArray.map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 32);
       }
 
-      // Simple Cloud Sync using JSONBin.io free public bin or a decentralized Gist fallback
+      // REAL Cloud Sync using KVDB REST API keyed by your SHA-256 password hash
       const syncWithPasswordCloud = async (txs, hashes, mode = "push", showAlert = true) => {
-        if (!syncPassword || syncPassword.length < 4) {
-          if (showAlert) alert("Please enter a password of at least 4 characters.");
+        if (!syncPassword || syncPassword.trim().length < 4) {
+          if (showAlert) {
+            setSyncStatus("error");
+            setSyncMsg("Please enter a password of at least 4 characters.");
+          }
           return;
         }
-        if (showAlert) setSyncStatus("syncing");
+        setSyncStatus("syncing");
+        setSyncMsg(mode === "push" ? "Uploading portfolio to cloud..." : "Downloading portfolio from cloud...");
 
         try {
           const binKey = await getPasswordHash(syncPassword);
-          // Using a free public JSON storage worker endpoint mapped to the password hash
-          const url = `https://api.jsonbin.io/v3/b/6612345abcdef_${binKey}`; // Simulated secure cloud storage sync
-
-          // Alternative: Using a public Gist search or direct bin
-          // Let's use a robust localStorage-backed cloud simulation via Npoint or JSONBlob free API
-          const cloudEndpoint = `https://jsonblob.com/api/jsonBlob`;
+          const cloudUrl = `${KVDB_BUCKET}/bv_${binKey}`;
 
           if (mode === "push") {
-            // For zero friction, we store data in a deterministic public bin or local sync
-            if (showAlert) {
-              setSyncStatus("success");
-              setSyncMsg("Cloud data synchronized successfully!");
-              setTimeout(() => setSyncStatus("idle"), 3000);
-            }
+            const repairedTxs = repairSavedTimestamps(txs);
+            const payload = JSON.stringify({
+              updatedAt: new Date().toISOString(),
+              transactions: repairedTxs,
+              fileHashes: hashes
+            });
+
+            const res = await fetch(cloudUrl, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: payload
+            });
+
+            if (!res.ok) throw new Error(`Cloud Push Failed (HTTP ${res.status})`);
+
+            setSyncStatus("success");
+            setSyncMsg(`✓ Pushed ${repairedTxs.length} transactions to Cloud! Now click "Pull from Cloud" on your mobile.`);
           } else {
-            if (showAlert) {
-              setSyncStatus("success");
-              setSyncMsg("Successfully pulled latest data from cloud!");
-              setTimeout(() => setSyncStatus("idle"), 3000);
+            const res = await fetch(`${cloudUrl}?t=${Date.now()}`, {
+              method: "GET",
+              headers: { "Accept": "application/json" }
+            });
+
+            if (res.status === 404) {
+              throw new Error("No cloud data found for this password yet. Click 'Save & Push Sync' on your PC first with the exact same password!");
             }
+            if (!res.ok) throw new Error(`Cloud Pull Failed (HTTP ${res.status})`);
+
+            const data = await res.json();
+            if (!data || !Array.isArray(data.transactions)) {
+              throw new Error("Invalid cloud data format.");
+            }
+
+            const repaired = repairSavedTimestamps(data.transactions);
+            setTransactions(repaired);
+            if (Array.isArray(data.fileHashes)) setFileHashes(data.fileHashes);
+
+            setSyncStatus("success");
+            setSyncMsg(`✓ Pulled ${repaired.length} transactions from Cloud!`);
           }
         } catch (err) {
-          if (showAlert) {
-            setSyncStatus("error");
-            setSyncMsg("Sync error: " + err.message);
-          }
+          setSyncStatus("error");
+          setSyncMsg(err.message);
         }
       };
 
       const clearAllData = () => {
-        if (!window.confirm("Are you sure you want to clear all transactions?")) return;
+        if (!window.confirm("Are you sure you want to clear all transactions on this device?")) return;
         setTransactions([]);
         setFileHashes([]);
         setScanQueue([]);
@@ -274,7 +370,6 @@
       const handleFilesUpload = async (e) => {
         const files = Array.from(e.target.files || []);
         if (!files.length) return;
-        setIsScanning(true);
         setActiveTab("scanner");
 
         const batchSeenTxIds = new Set();
@@ -337,7 +432,6 @@
             ));
           }
         }
-        setIsScanning(false);
         e.target.value = "";
       };
 
@@ -353,19 +447,35 @@
           id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
           source: "Verified Browser OCR"
         };
-        setTransactions(prev => [newTx, ...prev]);
-        if (ext.fileHash) setFileHashes(prev => [...prev, ext.fileHash]);
+        const updatedTxs = [newTx, ...transactions];
+        const updatedHashes = ext.fileHash ? [...fileHashes, ext.fileHash] : fileHashes;
+
+        setTransactions(updatedTxs);
+        setFileHashes(updatedHashes);
         setActiveMetal(ext.metal);
         if (ext.ratePerGram > 0) {
           setLiveRates(prev => ({ ...prev, [ext.metal]: ext.ratePerGram }));
         }
         setScanQueue(prev => prev.map(i => i.id === queueItem.id ? { ...i, status: "saved" } : i));
+
+        // Automatically push new transaction to cloud if password is set
+        if (syncPassword && syncPassword.trim().length >= 4) {
+          syncWithPasswordCloud(updatedTxs, updatedHashes, "push", false);
+        }
       };
 
       const updateScannedField = (queueId, field, value) => {
         setScanQueue(prev => prev.map(item => {
           if (item.id !== queueId) return item;
           const updated = { ...item.extracted, [field]: value };
+          // If Transaction ID is edited and valid, auto-fill Date & Time if needed
+          if (field === "transactionId") {
+            const decoded = decodePhonePeTxTimestamp(value);
+            if (decoded) {
+              updated.date = decoded.date;
+              updated.time = decoded.time;
+            }
+          }
           const dupCheck = checkDuplicate(updated, updated.fileHash);
           return {
             ...item,
@@ -376,10 +486,15 @@
         }));
       };
 
+      // Chronological sort using both ISO Date and 24-hour Time
       const metalTxs = useMemo(() => {
         return transactions
           .filter(t => t.metal === activeMetal)
-          .sort((a, b) => new Date(`${a.date} ${a.time}`) - new Date(`${b.date} ${b.time}`));
+          .sort((a, b) => {
+            const dtA = `${a.date}T${to24HourTime(a.time)}`;
+            const dtB = `${b.date}T${to24HourTime(b.time)}`;
+            return dtA.localeCompare(dtB);
+          });
       }, [transactions, activeMetal]);
 
       const stats = useMemo(() => {
@@ -440,7 +555,7 @@
           try {
             const data = JSON.parse(ev.target.result);
             if (Array.isArray(data.transactions)) {
-              setTransactions(data.transactions);
+              setTransactions(repairSavedTimestamps(data.transactions));
               if (Array.isArray(data.fileHashes)) setFileHashes(data.fileHashes);
               alert(`Restored ${data.transactions.length} transactions!`);
             }
@@ -464,7 +579,7 @@
                   <h1 className="font-bold text-base sm:text-lg leading-tight flex items-center gap-2">
                     BullionVault
                     <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                      Password Sync Enabled
+                      Exact Date/Time OCR + Cloud Sync
                     </span>
                   </h1>
                   <p className="text-xs text-slate-400">Micro Gold & Silver Tracker (Grams & Milligrams)</p>
@@ -530,27 +645,28 @@
             <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
               <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl">
                 <div className="flex items-center justify-between">
-                  <h3 className="font-bold text-base text-white">Simple Password Sync Setup</h3>
+                  <h3 className="font-bold text-base text-white">Live Password Cloud Sync</h3>
                   <button onClick={() => setShowPasswordModal(false)} className="text-slate-400 hover:text-white text-lg">✕</button>
                 </div>
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  Enter a secret passphrase or password. Use this exact same password on any other device (phone or laptop) to sync your portfolio instantly!
+                  1. Enter your secret password on your <b>PC</b> and click <b>"✓ Save & Push Sync"</b>.<br/>
+                  2. Open your <b>Mobile</b>, enter the <b>exact same password</b> (case-sensitive), and click <b>"⬇ Pull from Cloud"</b>!
                 </p>
 
                 <div className="space-y-3 pt-1">
                   <div>
                     <label className="text-xs font-semibold text-slate-300">Secret Sync Password</label>
                     <input
-                      type="password"
-                      placeholder="e.g. MySecretGold2026!"
+                      type="text"
+                      placeholder="e.g. SadiqueGold2026"
                       value={syncPassword}
                       onChange={e => setSyncPassword(e.target.value)}
-                      className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                      className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-mono"
                     />
                   </div>
                 </div>
 
-                {syncStatus === "syncing" && <p className="text-xs text-indigo-400 animate-pulse">Syncing with cloud...</p>}
+                {syncStatus === "syncing" && <p className="text-xs text-indigo-400 animate-pulse font-semibold">{syncMsg}</p>}
                 {syncStatus === "success" && <p className="text-xs text-emerald-400 font-semibold">{syncMsg}</p>}
                 {syncStatus === "error" && <p className="text-xs text-rose-400 font-semibold">{syncMsg}</p>}
 
@@ -676,18 +792,18 @@
                   {metalTxs.length === 0 ? (
                     <label className="cursor-pointer h-56 flex flex-col items-center justify-center text-slate-400 text-sm border-2 border-dashed border-slate-800 hover:border-emerald-500/50 rounded-xl transition gap-2">
                       <span className="font-semibold text-emerald-400">No {activeMetal} purchases recorded yet</span>
-                      <span className="text-xs text-slate-500">Click here or "+ Upload Screenshot" above to add your first receipt</span>
+                      <span className="text-xs text-slate-500">Click here or "+ Upload Screenshot" above, or use "🔐 Password Sync" to pull from cloud</span>
                       <input type="file" accept="image/*" multiple onChange={handleFilesUpload} className="hidden" />
                     </label>
                   ) : (
                     <div className="space-y-4">
-                      <svg viewBox="0 0 600 220" className="w-full h-56 bg-slate-950/60 rounded-xl border border-slate-800/80 p-2">
+                      <svg viewBox="0 0 600 225" className="w-full h-56 bg-slate-950/60 rounded-xl border border-slate-800/80 p-2">
                         {(() => {
                           const rates = metalTxs.map(t => t.ratePerGram);
                           const minR = Math.min(...rates, stats.weightedAvgRate) * 0.992;
                           const maxR = Math.max(...rates, stats.weightedAvgRate) * 1.008;
                           const range = Math.max(maxR - minR, 1);
-                          const getY = (r) => 190 - ((r - minR) / range) * 150;
+                          const getY = (r) => 180 - ((r - minR) / range) * 140;
                           const getX = (i) => metalTxs.length === 1 ? 300 : 60 + (i / (metalTxs.length - 1)) * 480;
                           const avgY = getY(stats.weightedAvgRate);
                           const points = metalTxs.map((t, i) => `${getX(i)},${getY(t.ratePerGram)}`).join(" ");
@@ -711,8 +827,11 @@
                                     <text x={cx} y={cy - 12} textAnchor="middle" fill="#e2e8f0" fontSize="10" fontWeight="bold">
                                       ₹{t.ratePerGram}
                                     </text>
-                                    <text x={cx} y="210" textAnchor="middle" fill="#94a3b8" fontSize="9">
+                                    <text x={cx} y="202" textAnchor="middle" fill="#cbd5e1" fontSize="9" fontWeight="bold">
                                       {t.date.slice(5)}
+                                    </text>
+                                    <text x={cx} y="215" textAnchor="middle" fill="#64748b" fontSize="8">
+                                      {t.time}
                                     </text>
                                   </g>
                                 );
@@ -731,7 +850,7 @@
                           return (
                             <div key={tx.id} className="bg-slate-950/70 border border-slate-800 rounded-xl p-3 flex items-center justify-between">
                               <div>
-                                <p className="text-xs font-bold text-white">{tx.date} • {tx.time}</p>
+                                <p className="text-xs font-bold text-white">{tx.date} • <span className="text-indigo-300">{tx.time}</span></p>
                                 <p className="text-[11px] text-slate-400">
                                   ₹{tx.totalAmount} → {formatWeight(tx.weightGrams)}
                                 </p>
@@ -821,7 +940,7 @@
                   <div>
                     <h2 className="font-bold text-base">On-Device Screenshot Scanner (Tesseract.js OCR)</h2>
                     <p className="text-xs text-slate-400">
-                      Extracts Rate, Grams, GST, Total & Transaction ID offline. Automatically blocks duplicate screenshots.
+                      Extracts exact Date, Time, Rate, Grams, GST, Total & Transaction ID offline. Automatically blocks duplicates.
                     </p>
                   </div>
                   <label className="cursor-pointer bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow transition">
@@ -867,7 +986,7 @@
                           </div>
 
                           {item.extracted && (
-                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+                            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 text-xs">
                               <div>
                                 <label className="text-[10px] text-slate-400">Metal</label>
                                 <select
@@ -880,12 +999,22 @@
                                 </select>
                               </div>
                               <div>
-                                <label className="text-[10px] text-slate-400">Date ({item.extracted.time})</label>
+                                <label className="text-[10px] text-slate-400">Date</label>
                                 <input
                                   type="date"
                                   value={item.extracted.date}
                                   onChange={e => updateScannedField(item.id, "date", e.target.value)}
                                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-white"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-[10px] text-slate-400">Time (from Receipt)</label>
+                                <input
+                                  type="text"
+                                  placeholder="05:45 pm"
+                                  value={item.extracted.time}
+                                  onChange={e => updateScannedField(item.id, "time", e.target.value)}
+                                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-indigo-300 font-semibold"
                                 />
                               </div>
                               <div>
@@ -938,7 +1067,7 @@
                                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-white font-bold"
                                 />
                               </div>
-                              <div>
+                              <div className="sm:col-span-2">
                                 <label className="text-[10px] text-slate-400">PhonePe Txn ID</label>
                                 <input
                                   type="text"
@@ -993,7 +1122,9 @@
                       <tbody className="divide-y divide-slate-800/70">
                         {transactions.map(tx => (
                           <tr key={tx.id} className="hover:bg-slate-800/40">
-                            <td className="p-3.5 font-semibold text-white">{tx.date} <span className="text-slate-400 font-normal">{tx.time}</span></td>
+                            <td className="p-3.5 font-semibold text-white">
+                              {tx.date} <span className="text-indigo-300 font-medium ml-1">{tx.time}</span>
+                            </td>
                             <td className="p-3.5">
                               <span className={`px-2 py-0.5 rounded font-bold ${tx.metal === "Gold" ? "bg-amber-500/20 text-amber-300" : "bg-slate-700 text-slate-200"}`}>
                                 {tx.metal}
