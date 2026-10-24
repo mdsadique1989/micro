@@ -271,8 +271,7 @@
         return { isDup: false, reason: null };
       };
 
-      
-    const handleFilesUpload = async (e) => {
+      const handleFilesUpload = async (e) => {
         const files = Array.from(e.target.files || []);
         if (!files.length) return;
         setIsScanning(true);
@@ -363,7 +362,7 @@
         setScanQueue(prev => prev.map(i => i.id === queueItem.id ? { ...i, status: "saved" } : i));
       };
 
-    const updateScannedField = (queueId, field, value) => {
+      const updateScannedField = (queueId, field, value) => {
         setScanQueue(prev => prev.map(item => {
           if (item.id !== queueId) return item;
           const updated = { ...item.extracted, [field]: value };
@@ -452,7 +451,7 @@
         reader.readAsText(file);
       };
 
-    return (
+      return (
         <div className="min-h-screen pb-16">
           {/* Top Header */}
           <header className="sticky top-0 z-30 bg-slate-900/90 backdrop-blur border-b border-slate-800 px-4 py-3">
@@ -656,7 +655,8 @@
                 </p>
               </div>
             </div>
-{/* TAB 1: DASHBOARD & DIP/HIGH CHART + FORECAST */}
+
+            {/* TAB 1: DASHBOARD & DIP/HIGH CHART + FORECAST */}
             {activeTab === "dashboard" && (
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-5">
@@ -814,7 +814,6 @@
               </div>
             )}
 
-            
             {/* TAB 2: SCREENSHOT OCR QUEUE */}
             {activeTab === "scanner" && (
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
@@ -968,7 +967,8 @@
                 )}
               </div>
             )}
-{/* TAB 3: FULL LEDGER */}
+
+            {/* TAB 3: FULL LEDGER */}
             {activeTab === "ledger" && (
               <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
                 {transactions.length === 0 ? (
@@ -1031,4 +1031,3 @@
   </script>
 </body>
 </html>
-            
