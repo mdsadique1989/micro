@@ -572,18 +572,28 @@
         return { totalWeight, totalPaid, totalMetalValue, totalGst, weightedAvgRate, breakEvenRate, currentVal, netPnL, count: metalTxs.length };
       }, [metalTxs, liveRates, activeMetal]);
 
-      const forecast = useMemo(() => {
-        if (metalTxs.length === 0) return { projectedRate: 0, futureGrams: 0, projectedValue: 0, futureInvested: 0 };
-        const rates = metalTxs.map(t => t.ratePerGram);
-        const n = rates.length;
-        const avgRate = stats.weightedAvgRate;
-        const slope = n >= 2 ? (rates[n - 1] - rates[0]) / (n - 1) : 0;
-        const projectedRate = Math.max(avgRate * 0.7, rates[n - 1] + slope * forecastMonths * 1.5);
+ const forecast = useMemo(() => {
+        const baseRate = liveRates[activeMetal] || stats.weightedAvgRate || 0;
+        if (baseRate === 0) return { projectedRate: 0, futureGrams: 0, projectedValue: 0, futureInvested: 0 };
+
+        // Realistic 1% monthly appreciation (~12% annual return)
+        const monthlyGrowthRate = 0.01;
+        const projectedRate = baseRate * (1 + monthlyGrowthRate * forecastMonths);
+
+        // Total new capital invested over the chosen months
         const futureInvested = monthlySip * forecastMonths;
-        const futureGrams = stats.totalWeight + (futureInvested * 0.97) / ((projectedRate + rates[n - 1]) / 2);
+
+        // Exact 3% GST deduction (Total / 1.03) bought at the average rate during the period
+        const netMetalCapital = futureInvested / 1.03;
+        const avgPurchaseRate = (baseRate + projectedRate) / 2;
+        const addedGrams = netMetalCapital / avgPurchaseRate;
+
+        const futureGrams = stats.totalWeight + addedGrams;
         const projectedValue = futureGrams * projectedRate;
+
         return { projectedRate, futureGrams, projectedValue, futureInvested };
-      }, [metalTxs, stats, monthlySip, forecastMonths]);
+      }, [stats, liveRates, activeMetal, monthlySip, forecastMonths]);
+      
 
       const exportBackup = () => {
         const blob = new Blob([JSON.stringify({ transactions }, null, 2)], { type: "application/json" });
