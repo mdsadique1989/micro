@@ -68,6 +68,5 @@ Prevents double-counting of receipts both across your saved portfolio and within
 
 ## 📁 Documentation Index
 
-1. **[`README.md`](./README.md):** Overview, core capabilities, financial formulas, and tech stack.
-2. **[`ARCHITECTURE.md`](./ARCHITECTURE.md):** Deep-dive into every function, regular expression, OCR self-healing heuristic, state hook, and cloud sync protocol.
-3. **[`SETUP_GUIDE.md`](./SETUP_GUIDE.md):** Step-by-step instructions for local execution, static hosting, mobile-to-PC cloud syncing, and troubleshooting.
+1. **[`ARCHITECTURE.md`](./ARCHITECTURE.md):** Deep-dive into every function, regular expression, OCR self-healing heuristic, state hook, and cloud sync protocol.
+2. **[`SETUP_GUIDE.md`](./SETUP_GUIDE.md):** Step-by-step instructions for local execution, static hosting, mobile-to-PC cloud syncing, and troubleshooting.
